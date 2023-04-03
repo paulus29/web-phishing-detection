@@ -13,6 +13,7 @@ import re
 import OpenSSL
 from dateutil.relativedelta import relativedelta
 from googlesearch import search
+from urllib.parse import urlparse
 url_sample = 'https://github.com/TanayBhadula/phishing-website-detection/blob/main/Phishing%20website%20detection%20using%20UI/inputScript.py'
 
 
@@ -128,10 +129,8 @@ def url_registration_length(whois_response):
         return -1
     else:
         try:
-            expiration_date = whois_response.expiration_date if whois_response.expiration_date is not list else whois_response.expiration_date[0]
-            creation_date = whois_response.creation_date if whois_response.creation_date is not list else whois_response.creation_date[0]
-            print(expiration_date)
-            print(creation_date)
+            expiration_date = whois_response.expiration_date if not isinstance(whois_response.expiration_date, list) else whois_response.expiration_date[0]
+            creation_date = whois_response.creation_date if not isinstance(whois_response.creation_date, list) else whois_response.creation_date[0]
             if expiration_date > creation_date + relativedelta(months=+12):
                 return 1
             else:
@@ -184,7 +183,6 @@ def check_port(url):
     split_url = url[index+3:]
     index = split_url.find("/")
     hostname = split_url[:index]
-    print(hostname)
     counter = 0
     for port, service in services.items():
         try:
@@ -271,27 +269,35 @@ def check_request_url(web_domain, soup):
         return -1
 
 # 14. URL of Anchor
+def url_validator(url):
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc, result.path])
+    except:
+        return False
+    
 def check_url_anchor(web_domain, soup):
     try:
+        invalid = ['#', '#content', '#skip', 'JavaScript::void(0)']
         anchors = soup.findAll('a', href=True)
-        total = len(anchors)
-        linked_to_same = 0
+        bad_count = 0
         for anchor in anchors:
-            _, domain, _ = extract(anchor['href'])
-            anchor_domain = domain
-            if web_domain == anchor_domain or anchor_domain == '':
-                linked_to_same += 1
-                
-        linked_outside = total - linked_to_same        
-        avg = 0
-        if total != 0:
-            avg = linked_outside/total
-        if avg < 0.31:
+            link = anchor['href']
+            print(link)
+            if link in invalid:
+                bad_count += 1
+            if url_validator(link):
+                extract_res = extract(link)
+                url_ref2 = extract_res.domain
+                if web_domain not in url_ref2:
+                    bad_count += 1
+
+        bad_count /= len(anchors)
+        if bad_count < 0.31:
             return 1
-        elif avg >= 0.31 and avg <= 0.67:
+        elif bad_count <= 0.67:
             return 0
-        else:
-            return -1
+        return -1
     except:
         return -1
     
@@ -300,23 +306,34 @@ def links_in_tag(web_domain, soup):
     try:
         # link
         links = soup.findAll('link', href=True)
+
         total = len(links)
         linked_to_same = 0
         for link in links:
             _, domain, _ = extract(link['href'])
             link_domain = domain
-            if web_domain == link_domain or link_domain == '':
+            if web_domain in link_domain or link_domain == '':
                 linked_to_same += 1
         
         # script
         scripts = soup.findAll('script', src=True)
+
         total += len(links)
         for script in scripts:
             _, domain, _ = extract(script['src'])
             script_domain = domain
-            if web_domain == script_domain or script_domain == '':
+            if web_domain in script_domain or script_domain == '':
                 linked_to_same += 1
-                
+
+        # meta
+        metas = soup.findAll('Meta', href=True)
+        total += len(links)
+        for meta in metas:
+            _, domain, _ = extract(meta['href'])
+            meta_domain = domain
+            if web_domain in meta_domain or meta_domain == '':
+                linked_to_same += 1
+
         linked_outside = total - linked_to_same        
         avg = 0
         if total != 0:
@@ -365,9 +382,10 @@ def submitting_to_mail(soup):
 # 18. Abnormal URL
 def abnormal_url(url, whois_response):
     try:
-        hostname=whois_response.domain_name[0].lower()
-        match=re.search(hostname, url)
-        if match:
+        hostname = whois_response.domain_name  if not isinstance(whois_response.domain_name, list) else whois_response.domain_name[0]
+        hostname = hostname.lower()
+        is_match=re.search(hostname, url)
+        if is_match:
             return 1
         else:
             return -1
@@ -388,16 +406,11 @@ def redirecting(response):
         return -1
     
 # 20. Status Bar Customization
-def check_statusbar(soup):
+def on_mouseover(soup):
     try:
-        no_of_script = 0
-        for _ in soup.find_all(onmouseover=True):
-            no_of_script += 1
-        
-        if no_of_script == 0:
-            return 1
-        else:
+        if str(soup).lower().find('onmouseover="window.status') != -1:
             return -1
+        return 1
     except:
         return -1
 
@@ -414,7 +427,7 @@ def check_right_click(response, soup):
 # 22. Using Pop-up Window
 def check_popup_window(response):
     try:
-        if regex.findall(r"alert\(", response.text):
+        if regex.findall(r"alert\(", response.text) or regex.findall(r"prompt\(", response.text):
             return 1
         else:
             return -1
@@ -435,7 +448,7 @@ def check_iframe(response):
 # 24. Age of Domain
 def age_of_domain(whois_response):
     try:
-        creation_date = whois_response.creation_date if whois_response.creation_date is not list else whois_response.creation_date[0]
+        creation_date = whois_response.creation_date if not isinstance(whois_response.creation_date, list) else whois_response.creation_date[0]
         if datetime.now() > creation_date + relativedelta(months=+6):
             return 1
         else:
@@ -464,20 +477,22 @@ def web_traffic(url):
         return -1
     
 # 27. page rank (30 detik sekali)
-def page_rank(domain, suffix):
-    rank_checker_response = requests.post("https://www.checkpagerank.net/index.php", {
-        "name": f'{domain}.{suffix}'
-    })
-    page_rank = 0
-    try:
-        page_rank = int(re.findall(r"<b>Google PageRank:</b></font> <font color=\"#000099\"><b>([0-9]+)/10</b>", rank_checker_response.text)[0])
-    except:
+def get_pagerank(url):
+    extract_res = extract(url)
+    url_ref = extract_res.domain + "." + extract_res.suffix
+    headers = {'API-OPR': 'co4k40wkw88w0k4k408w0k0wosgsokgcg8808o4k'}
+    domain = url_ref
+    req_url = 'https://openpagerank.com/api/v1.0/getPageRank?domains%5B0%5D=' + domain
+    request = requests.get(req_url, headers=headers)
+    result = request.json()
+    print(result)
+    value = result['response'][0]['page_rank_decimal']
+    if type(value) == str:
+        value = 0
+
+    if value < 2:
         return -1
-    
-    if page_rank <=2 :
-        return -1
-    else:
-        return 1
+    return 1
 
 # 28. google index
 def google_index(url):
@@ -495,11 +510,16 @@ def google_index(url):
         return -1
 
 # 29. Number of Links Pointing to Page
-def links_pointing_to_page(soup):
+def links_pointing_to_page(soup, web_domain):
     try:
         count = 0
         for link in soup.find_all('a'):
-            count += 1
+            a_link = link['href']
+            if url_validator(a_link):
+                _, domain, suffix = extract(a_link)
+                if web_domain in domain:
+                    count += 1
+                    
         if count>=2:
             return 1
         elif 0 < count <= 2:
@@ -571,16 +591,16 @@ def feature_extractor(url):
     features.append(submitting_to_mail(soup))
     features.append(abnormal_url(url, whois_response))
     features.append(redirecting(response))
-    features.append(check_statusbar(soup))
+    features.append(on_mouseover(soup))
     features.append(check_right_click(response, soup))
     features.append(check_popup_window(response))
     features.append(check_iframe(response))
     features.append(age_of_domain(whois_response))
     features.append(check_dns_record(whois_response))
     features.append(web_traffic(url)) # GAGAL
-    features.append(page_rank(web_domain, web_suffix))
+    features.append(get_pagerank(url))
     features.append(google_index(url))
-    features.append(links_pointing_to_page(soup))
+    features.append(links_pointing_to_page(soup, web_domain))
     features.append(statistical_report(url))
     return features
 
@@ -597,6 +617,8 @@ list_sites = [
     'https://sella-group.mysella.online/main/index.php'
     
 ]
+url_sample = "https://www.babla.co.id/bahasa-indonesia-bahasa-inggris/apa-saja"
+print(SSLfinal_State(url_sample))
 # waktu = []
 # for i in list_sites:
 #     start_time = time.time()
